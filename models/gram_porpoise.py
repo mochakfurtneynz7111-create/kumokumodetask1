@@ -1851,7 +1851,7 @@ class GRAMPorpoiseMMF(nn.Module):
             # 🔥🔥🔥 在这之后添加：
             # 保存attention权重供可解释性使用
             self._last_batch_attention = batch_A  # 列表，每个元素是一个样本的attention [n_patches]
-            print(f"  💾 Saved attention weights: {len(batch_A)} samples, first sample has {len(batch_A[0]) if batch_A else 0} patches")
+            # print(f"  💾 Saved attention weights: {len(batch_A)} samples, first sample has {len(batch_A[0]) if batch_A else 0} patches")
         
         # 🔥 Omic 模态（只在编码器存在且输入存在时处理）
         if self.fc_omic is not None and 'x_omic' in kwargs and kwargs['x_omic'] is not None:
@@ -1869,7 +1869,7 @@ class GRAMPorpoiseMMF(nn.Module):
             
             # Step 2: 处理3D输入（QA级别）
             if x_text.dim() == 3:  # [batch, 6, 768]
-                print(f"  🔍 Text input is 3D: {x_text.shape}")
+                # print(f"  🔍 Text input is 3D: {x_text.shape}")
                 
                 # 保存原始3D数据（用于可解释性）
                 self._temp_text_3d = x_text.to(device).float()
@@ -1888,7 +1888,7 @@ class GRAMPorpoiseMMF(nn.Module):
                 else:
                     # 方案B: 直接平均
                     x_text_2d = x_text.mean(dim=1)  # [batch, 768]
-                    print(f"     Aggregated via mean: {x_text_2d.shape}")
+                    # print(f"     Aggregated via mean: {x_text_2d.shape}")
                 
                 # 编码
                 h_text_enc = self.fc_text(x_text_2d)  # [batch, hidden_dim]
@@ -1899,12 +1899,12 @@ class GRAMPorpoiseMMF(nn.Module):
             
             # Step 3: 🔥🔥🔥 最终安全检查（关键！）
             if h_text_enc.dim() == 3:
-                print(f"  ⚠️ h_text_enc is still 3D: {h_text_enc.shape}, squeezing...")
+                # print(f"  ⚠️ h_text_enc is still 3D: {h_text_enc.shape}, squeezing...")
                 h_text_enc = h_text_enc.squeeze(1)
             
             # Step 4: 验证最终形状
             assert h_text_enc.dim() == 2, f"h_text_enc must be 2D, got {h_text_enc.shape}"
-            print(f"  ✅ Final h_text_enc: {h_text_enc.shape}")
+            # print(f"  ✅ Final h_text_enc: {h_text_enc.shape}")
         
         # 🔥 统计实际存在的模态
         available_features = []
