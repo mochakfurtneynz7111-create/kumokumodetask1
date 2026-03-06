@@ -221,7 +221,14 @@ def parse_batch_data(batch_data, task_type='classification'):
     }
     
     batch_len = len(batch_data)
-    
+    # 🔍 诊断打印（text-only调试用，可之后删除）
+    if batch_len not in [6, 7, 8]:
+        shapes = []
+        for x in batch_data:
+            if hasattr(x, 'shape'): shapes.append(str(x.shape))
+            elif isinstance(x, list): shapes.append(f'list[{len(x)}]')
+            else: shapes.append(type(x).__name__)
+        # print(f'  🔍 parse_batch_data: batch_len={batch_len}, shapes={shapes}')
     try:
         if task_type in ['classification', 'multi_label']:
             if batch_len == 2:
@@ -672,13 +679,30 @@ def train_loop_survival_gram(epoch, model, loader, optimizer, n_classes,
         censor = parsed['censor']
         
         # 🔥 检查至少有一种模态数据
+        # 先检测 zeros 占位符（text-only 时 wsi/omic 为 zeros(B,1,?) 或 zeros(B,1)）
+        def _is_placeholder(t):
+            if t is None: return True
+            if isinstance(t, torch.Tensor):
+                return t.shape[-1] <= 1 and t.numel() > 0
+            if isinstance(t, list):
+                return all(_is_placeholder(x) for x in t)
+            return False
+
         has_wsi = data_WSI_list is not None and (
             (isinstance(data_WSI_list, list) and len(data_WSI_list) > 0) or
             (not isinstance(data_WSI_list, list) and data_WSI_list.numel() > 0)
-        )
-        has_omic = data_omic is not None and data_omic.numel() > 0
-        
-        if not has_wsi and not has_omic:
+        ) and not _is_placeholder(data_WSI_list)
+
+        has_omic = (data_omic is not None and data_omic.numel() > 0
+                    and not _is_placeholder(data_omic))
+
+        has_text = data_text is not None and data_text.numel() > 0
+
+        # 如果是占位符，置 None，不传给模型
+        if not has_wsi: data_WSI_list = None
+        if not has_omic: data_omic = None
+
+        if not has_wsi and not has_omic and not has_text:
             print(f'Warning: Batch {batch_idx} has no valid data, skipping...')
             continue
         
@@ -752,6 +776,9 @@ def train_loop_survival_gram(epoch, model, loader, optimizer, n_classes,
             forward_kwargs['x_omic'] = data_omic
         if data_text is not None:
             forward_kwargs['x_text'] = data_text
+            
+        # ← 在这里加这一行：
+        # print(f"  🔍 DEBUG forward_kwargs keys: {list(forward_kwargs.keys())}, data_text shape: {data_text.shape if data_text is not None else None}")
         
         # 🔥 前向传播
         try:
