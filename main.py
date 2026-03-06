@@ -104,6 +104,17 @@ def main(args):
         else:
             args.omic_input_dim = 0
 
+        # 🔥 单模态：恢复被 mode 判断覆写的 dim
+        if getattr(args, 'single_modality', None) == 'path':
+            args.omic_input_dim = 0
+            args.text_input_dim = 0
+        elif getattr(args, 'single_modality', None) == 'omic':
+            args.path_input_dim = 0
+            args.text_input_dim = 0
+        elif getattr(args, 'single_modality', None) == 'text':
+            args.path_input_dim = 0
+            args.omic_input_dim = 0
+
         ### 选择训练函数
         if args.model_type == 'gram_porpoise_mmf':
             # 🔥 使用GRAM版本 (支持可解释性)
@@ -278,7 +289,7 @@ parser.add_argument('--model_type', type=str,
                    default='mcat', 
                    help='Type of model (Default: mcat). Use gram_porpoise_mmf for GRAM-enhanced multimodal model')
 
-parser.add_argument('--mode',            type=str, choices=['omic', 'path', 'pathomic', 'pathomic_fast', 'cluster', 'coattn', 'pathomictext'], default='coattn', help='Specifies which modalities to use / collate function in dataloader.')
+parser.add_argument('--mode',            type=str, choices=['text','omic', 'path', 'pathomic', 'pathomic_fast', 'cluster', 'coattn', 'pathomictext'], default='coattn', help='Specifies which modalities to use / collate function in dataloader.')
 parser.add_argument('--fusion',          type=str, choices=['None', 'concat', 'bilinear','gram','transformer','concatonly','transformer_medium', 'cross_attention', 'cpathomni_sequential','highdim_fusion'], default='bilinear', help='Type of fusion. (Default: concat).')
 parser.add_argument('--apply_sig',		 action='store_true', default=False, help='Use genomic features as signature embeddings.')
 parser.add_argument('--apply_sigfeats',  action='store_true', default=False, help='Use genomic features as tabular features.')
@@ -527,18 +538,19 @@ if args.single_modality is not None:
     print(f"🔥 Single Modality Mode: {args.single_modality.upper()}")
     
     if args.single_modality == 'path':
-        args.mode = 'path'
+        # 不改 args.mode，dataset 已用 'pathomictext' 构建，
+        # collate 继续按 6 元素处理，模型因 fc_omic/fc_text=None 忽略对应模态
         args.omic_input_dim = 0
         args.text_input_dim = 0
-        print(f"   Mode: path only")
+        print(f"   Mode: path only (keeping args.mode={args.mode})")
         print(f"   Omic dim: 0 (disabled)")
         print(f"   Text dim: 0 (disabled)")
         
     elif args.single_modality == 'omic':
-        args.mode = 'omic'
+        # 不改 args.mode，理由同 path-only
         args.path_input_dim = 0
         args.text_input_dim = 0
-        print(f"   Mode: omic only")
+        print(f"   Mode: omic only (keeping args.mode={args.mode})")
         print(f"   Path dim: 0 (disabled)")
         print(f"   Text dim: 0 (disabled)")
         
