@@ -198,7 +198,11 @@ def collate_MIL_survival_h5(batch, mode='pathomic'):
         for i, item in enumerate(batch):
             try:
                 img_list.append(item['path'])  # 🔥 保持为列表
-                omic_list.append(item['omic'].squeeze(0) if item['omic'].dim() > 1 else item['omic'])
+                # omic 可能是 None（单模态 path/text 时），补零防崩溃
+                _omic = item['omic']
+                if _omic is None:
+                    _omic = torch.zeros(1)
+                omic_list.append(_omic.squeeze(0) if _omic.dim() > 1 else _omic)
                 label_list.append(int(item['label']))
                 event_time_list.append(item['event_time'])
                 censor_list.append(item['censorship'])
@@ -226,10 +230,10 @@ def collate_MIL_survival_h5(batch, mode='pathomic'):
             event_time_batch = torch.FloatTensor(event_time_list)
             censor_batch = torch.FloatTensor(censor_list)
             
-            if mode == 'pathomictext' and text_list:
+            if mode in ['pathomictext', 'text'] and text_list:
                 text_batch = torch.stack(text_list, dim=0).type(torch.FloatTensor)
                 # 🔥 返回 img_list（列表）
-                return [img_list, omic_batch, text_batch, label_batch, 
+                return [img_list, omic_batch, text_batch, label_batch,
                        event_time_batch, censor_batch, coords_list, slide_ids]
             else:
                 return [img_list, omic_batch, label_batch, 
@@ -310,7 +314,11 @@ def collate_MIL_multilabel_h5(batch, mode='pathomic'):
         for i, item in enumerate(batch):
             try:
                 img_list.append(item['path'])  # 🔥 保持为列表
-                omic_list.append(item['omic'].squeeze(0) if item['omic'].dim() > 1 else item['omic'])
+                # omic 可能是 None（单模态 path/text 时），补零防崩溃
+                _omic = item['omic']
+                if _omic is None:
+                    _omic = torch.zeros(1)
+                omic_list.append(_omic.squeeze(0) if _omic.dim() > 1 else _omic)
                 label_list.append(item['label'])
                 
                 if item['coords'] is not None:
@@ -505,7 +513,7 @@ def collate_MIL_survival(batch, mode='pathomic'):
         try:
             img_list.append(item[0])
             
-            if mode == 'pathomictext':
+            if mode in ['pathomictext', 'text']:
                 omic_features = item[1]
                 text_features = item[2]
                 label = item[3]
@@ -539,7 +547,7 @@ def collate_MIL_survival(batch, mode='pathomic'):
             continue
 
     if not omic_list:
-        if mode == 'pathomictext':
+        if mode in ['pathomictext', 'text']:
             return [[], torch.empty(0, 2013), torch.empty(0, 768), 
                    torch.empty(0, dtype=torch.long), torch.empty(0), torch.empty(0)]
         else:
@@ -552,7 +560,7 @@ def collate_MIL_survival(batch, mode='pathomic'):
         event_time_batch = torch.FloatTensor(event_time_list)
         censor_batch = torch.FloatTensor(censor_list)
 
-        if mode == 'pathomictext':
+        if mode in ['pathomictext', 'text']:
             text_batch = torch.stack(text_list, dim=0).type(torch.FloatTensor)
             return [img_list, omic_batch, text_batch, label_batch, event_time_batch, censor_batch]
         else:
@@ -560,7 +568,7 @@ def collate_MIL_survival(batch, mode='pathomic'):
             
     except Exception as e:
         print(f"Error creating survival batch tensors: {e}")
-        if mode == 'pathomictext':
+        if mode in ['pathomictext', 'text']:
             return [[], torch.empty(0, 2013), torch.empty(0, 768), 
                    torch.empty(0, dtype=torch.long), torch.empty(0), torch.empty(0)]
         else:
@@ -584,7 +592,7 @@ def collate_MIL_multilabel(batch, mode='pathomic'):
         try:
             img_list.append(item[0])
             
-            if mode == 'pathomictext':
+            if mode in ['pathomictext', 'text']:
                 omic_features = item[1]
                 text_features = item[2]
                 label = item[3]  # 多标签张量
@@ -643,7 +651,7 @@ def collate_MIL_multilabel(batch, mode='pathomic'):
     for item in batch:
         img.append(item[0])
         omic.append(item[1])
-        if mode == 'pathomictext':
+        if mode in ['pathomictext', 'text']:
             text.append(item[2])
             label.append(item[3])  # 多标签：保持tensor，不用int()
         else:
@@ -671,7 +679,7 @@ def collate_MIL_survival(batch, mode='pathomic'):
     for item in batch:
         img.append(item[0])
         omic.append(item[1])
-        if mode == 'pathomictext':
+        if mode in ['pathomictext', 'text']:
             text.append(item[2])
             label.append(int(item[3]))
             event_time.append(item[4])
@@ -687,8 +695,8 @@ def collate_MIL_survival(batch, mode='pathomic'):
     event_time = torch.FloatTensor(event_time)
     censor = torch.FloatTensor(censor)
 
-    if mode == 'pathomictext':
-        text = torch.cat(text, dim = 0).type(torch.FloatTensor)
+    if mode in ['pathomictext', 'text']:
+        text = torch.cat(text, dim=0).type(torch.FloatTensor)
         return [img, omic, text, label, event_time, censor]
     else:
         return [img, omic, label, event_time, censor]
@@ -702,7 +710,7 @@ def collate_MIL_classification(batch, mode='pathomic'):
     for item in batch:
         img.append(item[0])
         omic.append(item[1])
-        if mode == 'pathomictext':
+        if mode in ['pathomictext', 'text']:
             text.append(item[2])
             label.append(int(item[3]))
         else:
