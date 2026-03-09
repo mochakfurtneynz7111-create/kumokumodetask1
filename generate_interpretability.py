@@ -100,6 +100,7 @@ def get_args():
             "wsi_heatmap",    # → panel_wsi_heatmap.py
             "fusion_weights", # → panel_fusion_weights.py
             "omic_pathways",  # → panel_omic_pathways.py
+            "omic_ig",
             "qa_pathway",     # → panel_qa_pathway.py
             "qa_patch",       # → panel_qa_patch.py
             "patch_pathway",  # → panel_patch_pathway.py
@@ -556,6 +557,7 @@ def _call_single_panel(module, panel_name: str, data, save_path: str) -> bool:
     qa_patch       →  panel_qa_patch.py            qa2patch_attn, qa_texts, thumbnail, coords
     patch_pathway  →  panel_patch_pathway.py       patch_pathway_map, pathway_names
     """
+    """
     if panel_name == "wsi_heatmap":
         # patch_png_dir: {preprocessing_dir}/output/{slide_id}/{x}x_{y}y.png
         import os as _os
@@ -564,11 +566,61 @@ def _call_single_panel(module, panel_name: str, data, save_path: str) -> bool:
         return module.save_panel(
             thumbnail=data.thumbnail,
             coords=data.coords,
-            attention_scores=data.attention_scores,
+            attention_scores=data.ig_scores if data.ig_scores is not None else data.attention_scores,
             save_path=save_path,
             slide_id=data.slide_id,
             patch_png_dir=_patch_png_dir,
         )
+    """
+    
+    if panel_name == "wsi_heatmap":
+        _preprocessing_dir = getattr(data, "_preprocessing_dir", None)
+        _patch_png_dir = os.path.join(_preprocessing_dir, "output") \
+                         if _preprocessing_dir else None
+        
+        # 第一张：原来的 Attention 热力图
+        module.save_panel(
+            thumbnail=data.thumbnail,
+            coords=data.coords,
+            attention_scores=data.attention_scores,
+            save_path=save_path,                          # panel1_wsi_heatmap.png
+            slide_id=data.slide_id,
+            patch_png_dir=_patch_png_dir,
+        )
+        
+        # 第二张：IG 热力图（文件名加 _ig 后缀）
+        if data.ig_scores is not None:
+            ig_save_path = save_path.replace(".png", "_ig.png")
+            module.save_panel(
+                thumbnail=data.thumbnail,
+                coords=data.coords,
+                attention_scores=data.ig_scores,          # 传 IG scores
+                save_path=ig_save_path,                   # panel1_wsi_heatmap_ig.png
+                slide_id=data.slide_id,
+                patch_png_dir=_patch_png_dir,
+            )
+        return True
+    
+    #反转
+    """
+    if panel_name == "wsi_heatmap":
+        _preprocessing_dir = getattr(data, "_preprocessing_dir", None)
+        _patch_png_dir = os.path.join(_preprocessing_dir, "output") \
+                         if _preprocessing_dir else None
+        
+        # 翻转 attention scores：原来低分变高分，高分变低分
+        flipped_attention = 1.0 - (data.attention_scores - data.attention_scores.min()) / \
+                            (data.attention_scores.max() - data.attention_scores.min() + 1e-8)
+        
+        return module.save_panel(
+            thumbnail=data.thumbnail,
+            coords=data.coords,
+            attention_scores=flipped_attention,   # ← 传翻转后的
+            save_path=save_path,
+            slide_id=data.slide_id,
+            patch_png_dir=_patch_png_dir,
+        )
+    """
     if panel_name == "fusion_weights":
         return module.save_panel(
             fusion_weights=data.fusion_weights,
@@ -582,6 +634,18 @@ def _call_single_panel(module, panel_name: str, data, save_path: str) -> bool:
             pathway_scores=data.pathway_scores,
             pathway_names=data.pathway_names,
             save_path=save_path,
+        )
+    if panel_name == "omic_ig":
+        # 加载通路基因集（自动尝试 MSigDB → 内置 LUAD 通路）
+        from utils.interpretability.panel_omic_ig import load_msigdb_hallmark
+        pathway_gene_sets = load_msigdb_hallmark()
+
+        return module.save_panel(
+            omic_ig_scores    = data.omic_ig_scores,
+            omic_col_names    = data.omic_col_names,
+            save_path         = save_path,
+            pathway_gene_sets = pathway_gene_sets,
+            slide_id          = data.slide_id or "",
         )
     if panel_name == "qa_pathway":
         return module.save_panel(
@@ -669,6 +733,7 @@ def main():
         "wsi_heatmap":    "utils.interpretability.panel_wsi_heatmap",
         "fusion_weights": "utils.interpretability.panel_fusion_weights",
         "omic_pathways":  "utils.interpretability.panel_omic_pathways",
+        "omic_ig":        "utils.interpretability.panel_omic_ig",
         "qa_pathway":     "utils.interpretability.panel_qa_pathway",
         "qa_patch":       "utils.interpretability.panel_qa_patch",
         "patch_pathway":  "utils.interpretability.panel_patch_pathway",
@@ -683,6 +748,9 @@ def main():
         model=model,
         device=device_str,
         preprocessing_dir=args.preprocessing_dir,
+        task_type=args.task_type,
+        hallmark_csv='/root/autodl-tmp/pathway/hallmarks_signatures.csv',  # ← 新增
+        omic_col_names=omic_cols,   # ← 从 df 里取，已有的 _get_omic_cols(df) 结果
     )
     loader = SampleLoader(args=args, df=df, text_embeddings=text_embeddings)
 
@@ -720,6 +788,7 @@ def main():
             survival_time=sample["survival_time"],
             event=sample["event"],
             coords=sample["coords"],  # 来自 H5，已在 SampleLoader._load_wsi() 里读好
+            omic_col_names = loader.omic_cols,
         )
 
         # 输出路径：{output_dir}/{sample_id}/{panel}.png
