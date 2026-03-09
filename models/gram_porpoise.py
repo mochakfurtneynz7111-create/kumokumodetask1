@@ -1857,6 +1857,7 @@ class GRAMPorpoiseMMF(nn.Module):
         if self.fc_omic is not None and 'x_omic' in kwargs and kwargs['x_omic'] is not None:
             x_omic = kwargs['x_omic']
             h_omic_enc = self.fc_omic(x_omic)
+            self._temp_omic = x_omic.detach()  # ← 加这一行，保存原始 omic 输入
         
         # 🔥 Text 模态（只在编码器存在且输入存在时处理）
         # 🔥🔥🔥 Text 模态处理（完整修复版）
