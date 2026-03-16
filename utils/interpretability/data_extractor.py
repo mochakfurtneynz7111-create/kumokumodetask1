@@ -295,6 +295,7 @@ class InterpretabilityDataExtractor:
                 if coords is not None and attn.shape[0] == len(coords):
                     if flip:
                         attn = -attn           # 反转方向
+                    attn = np.maximum(attn, 0)   # 🔥 新增：ReLU，仅保留正向贡献
                     print(f"  📊 Raw attn: min={attn.min():.4f}  max={attn.max():.4f}"
                           f"  mean={attn.mean():.4f}  {'[FLIPPED]' if flip else ''}")
                     return attn.astype(np.float32)
@@ -372,6 +373,12 @@ class InterpretabilityDataExtractor:
         result.qa2pathway_attn = attn
         if pw_names:
             result.pathway_names = pw_names  # 覆盖原来的通路名
+
+        result.qa2patch_attn = self._compute_posthoc_qa_patch(output)
+        
+        # 🔥 新增：Patch ↔ Pathway
+        result.patch_pathway_map = self._compute_posthoc_patch_pathway(output)
+        
         if exp is None:
             return
 
@@ -388,6 +395,61 @@ class InterpretabilityDataExtractor:
         if "patch_pathway_correspondence" in exp:
             result.patch_pathway_map = to_np(exp["patch_pathway_correspondence"])
 
+    def _compute_posthoc_qa_patch(self, output) -> Optional[np.ndarray]:
+        """
+        Post-hoc 计算 QA → Patch 注意力。
+        
+        流程：
+          1. _temp_text_3d  → [6, 768]  → fc_text → [6, hidden_dim]
+          2. _temp_path_features → list[[n_patches, path_hidden_dim]]
+                                 → 取第一个样本 → rho → [n_patches, hidden_dim]
+          3. 余弦相似度 softmax → [6, n_patches]
+        
+        Returns:
+            np.ndarray [6, n_patches] 或 None（缺少依赖时）
+        """
+        model  = self.model
+        device = next(model.parameters()).device
+    
+        # ── 1. QA embeddings ──────────────────────────────────────
+        if not hasattr(model, '_temp_text_3d') or model._temp_text_3d is None:
+            print("  ⚠️ [QA→Patch] _temp_text_3d not found")
+            return None
+        x_text = model._temp_text_3d[0].float().to(device)   # [6, 768]
+    
+        # ── 2. Per-patch features ─────────────────────────────────
+        if not hasattr(model, '_temp_path_features') or not model._temp_path_features:
+            print("  ⚠️ [QA→Patch] _temp_path_features not found")
+            return None
+        patch_feats = model._temp_path_features[0].float().to(device)
+        # patch_feats: [n_patches, path_hidden_dim]，即 path_fc 的输出
+    
+        with torch.no_grad():
+            # ── 3. 编码 QA ────────────────────────────────────────
+            if hasattr(model, 'fc_text') and model.fc_text is not None:
+                qa_encoded = model.fc_text(x_text)            # [6, hidden_dim]
+            else:
+                print("  ⚠️ [QA→Patch] fc_text not found")
+                return None
+    
+            # ── 4. 投影 patch 到同一语义空间 ──────────────────────
+            # rho: [path_hidden_dim] → [hidden_dim]（和 fc_text 输出维度相同）
+            if hasattr(model, 'rho') and model.rho is not None:
+                patch_projected = model.rho(patch_feats)       # [n_patches, hidden_dim]
+            else:
+                # 没有 rho 时 fallback：直接用 patch_feats（维度可能不同，相似度计算会失败）
+                print("  ⚠️ [QA→Patch] rho not found, using raw patch features")
+                patch_projected = patch_feats
+    
+            # ── 5. 余弦相似度 → softmax ───────────────────────────
+            qa_norm    = F.normalize(qa_encoded,      dim=1)   # [6, hidden_dim]
+            patch_norm = F.normalize(patch_projected, dim=1)   # [n_patches, hidden_dim]
+    
+            sim  = torch.mm(qa_norm, patch_norm.t())            # [6, n_patches]
+            attn = torch.softmax(sim * 5.0, dim=-1)             # [6, n_patches]，温度 5
+    
+        return attn.cpu().numpy().astype(np.float32)
+
     def _compute_posthoc_qa_pathway(self, output):
         model = self.model
         device = next(model.parameters()).device
@@ -396,6 +458,9 @@ class InterpretabilityDataExtractor:
         if not hasattr(model, '_temp_text_3d') or model._temp_text_3d is None:
             print("  ⚠️ _temp_text_3d not found")
             return None, []
+        print(f"  🔍 _temp_text_3d shape: {model._temp_text_3d.shape}")  
+        # 期望输出：torch.Size([1, 6, 768])
+        # 如果是 torch.Size([1, 768]) 说明 3D 没被保存，post-hoc 会失效
         x_text = model._temp_text_3d[0].float().to(device)  # [6, 768]
     
         # ── 2. 取原始 omic 向量 ──
@@ -449,6 +514,83 @@ class InterpretabilityDataExtractor:
             attn = torch.softmax(sim * 5.0, dim=-1)          # [6, n_pathways]
     
         return attn.cpu().numpy().astype(np.float32), valid_pathway_names
+
+    def _compute_posthoc_patch_pathway(self, output) -> Optional[np.ndarray]:
+        """
+        Post-hoc 计算 Patch ↔ Pathway 对应关系。
+    
+        流程：
+          1. _temp_path_features → [n_patches, path_hidden_dim]
+                                 → rho → [n_patches, hidden_dim]
+          2. 对每条 pathway，用 masked omic → fc_omic → [hidden_dim]
+          3. 余弦相似度 → softmax → [n_patches, n_pathways]
+    
+        Returns:
+            np.ndarray [n_patches, n_pathways] 或 None
+        """
+        model  = self.model
+        device = next(model.parameters()).device
+    
+        # ── 1. Per-patch features ─────────────────────────────────
+        if not hasattr(model, '_temp_path_features') or not model._temp_path_features:
+            print("  ⚠️ [Patch↔Pathway] _temp_path_features not found")
+            return None
+        patch_feats = model._temp_path_features[0].float().to(device)
+        # patch_feats: [n_patches, path_hidden_dim]
+    
+        # ── 2. 投影到 hidden 空间 ──────────────────────────────────
+        if not hasattr(model, 'rho') or model.rho is None:
+            print("  ⚠️ [Patch↔Pathway] rho not found")
+            return None
+        with torch.no_grad():
+            patch_projected = model.rho(patch_feats)      # [n_patches, hidden_dim]
+    
+        # ── 3. 构建 pathway 向量（与 _compute_posthoc_qa_pathway 完全一致）
+        if not hasattr(model, '_temp_omic') or model._temp_omic is None:
+            print("  ⚠️ [Patch↔Pathway] _temp_omic not found")
+            return None
+        x_omic = model._temp_omic[0].float().to(device)   # [omic_dim]
+    
+        if not self.pathway_gene_map or not self.omic_col_names:
+            print("  ⚠️ [Patch↔Pathway] No pathway-gene mapping")
+            return None
+    
+        col2idx = {col: i for i, col in enumerate(self.omic_col_names)}
+    
+        pathway_vecs = []
+        valid_pathway_names = []
+    
+        with torch.no_grad():
+            zero_input   = torch.zeros(1, x_omic.shape[0], device=device)
+            baseline_vec = model.fc_omic(zero_input)[0]   # [hidden_dim]
+    
+            for pw_name in self.pathway_names_ordered:
+                gene_cols = self.pathway_gene_map[pw_name]
+                indices   = [col2idx[c] for c in gene_cols if c in col2idx]
+                if not indices:
+                    continue
+                masked = torch.zeros_like(x_omic)
+                masked[indices] = x_omic[indices]
+                pw_vec = model.fc_omic(masked.unsqueeze(0))[0] - baseline_vec
+                pathway_vecs.append(pw_vec)
+                valid_pathway_names.append(pw_name)
+    
+            if not pathway_vecs:
+                print("  ⚠️ [Patch↔Pathway] No valid pathway vectors")
+                return None
+    
+            pathway_mat = torch.stack(pathway_vecs, dim=0)   # [n_pathways, hidden_dim]
+    
+            # ── 4. 余弦相似度 → softmax ────────────────────────────
+            patch_norm   = F.normalize(patch_projected, dim=1)  # [n_patches, hidden_dim]
+            pathway_norm = F.normalize(pathway_mat,     dim=1)  # [n_pathways, hidden_dim]
+    
+            # [n_patches, n_pathways]
+            sim  = torch.mm(patch_norm, pathway_norm.t())
+            attn = torch.softmax(sim * 5.0, dim=-1)
+    
+        print(f"  ✅ [Patch↔Pathway] map: {attn.shape}  max={attn.max():.4f}")
+        return attn.cpu().numpy().astype(np.float32)
         
     # ─────────────────────────────────────────────────────────────
     # 私有：WSI 文件加载
