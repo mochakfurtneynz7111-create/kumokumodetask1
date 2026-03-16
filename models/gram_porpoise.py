@@ -1205,6 +1205,7 @@ class BatchedAttn_Net_Gated(nn.Module):
     
     def forward(self, x_batch):
         batch_A = []
+        batch_A_raw = []           # 🔥 新增：pre-softmax (softmax之前) 的原始 logits
         batch_h = []
         batch_attention_features = []
         
@@ -1217,16 +1218,18 @@ class BatchedAttn_Net_Gated(nn.Module):
                 A = A.squeeze(0)
             else:
                 A = A[:, 0]
-            
+
+            A_raw = A.clone()                # 🔥 新增：保存 softmax 之前的原始 logits
             A = F.softmax(A, dim=0)
             attention_feat = torch.einsum('n,nd->d', A, h)
             batch_attention_features.append(attention_feat)
             
             batch_A.append(A)
+            batch_A_raw.append(A_raw)        # 🔥 新增
             batch_h.append(h)
         
         batched_attention = torch.stack(batch_attention_features, dim=0)
-        return batch_A, batch_h, batched_attention
+        return batch_A, batch_A_raw, batch_h, batched_attention   # 🔥 新增了 batch_A_raw 返回值
 
 
 class CPathOmniSequentialFusion(nn.Module):
@@ -1605,7 +1608,8 @@ class GRAMPorpoiseMMF(nn.Module):
         # 🔥🔥🔥 Text 编码器（支持QA级别）
         if text_input_dim > 0:
             # 🔥 检测是否启用QA级别的文本
-            self.enable_qa_text = getattr(self, 'enable_explainability', False) and getattr(self, 'n_qa_pairs', 1) > 1
+            # self.enable_qa_text = getattr(self, 'enable_explainability', False) and getattr(self, 'n_qa_pairs', 1) > 1
+            self.enable_qa_text = getattr(self, 'n_qa_pairs', 1) > 1
             
             if self.enable_qa_text:
                 # 🔥 QA级别编码器：[batch, 6, 768] -> [batch, hidden_dim]
@@ -1845,12 +1849,14 @@ class GRAMPorpoiseMMF(nn.Module):
                     x_path_batch = [x_path_batch]
             
             processed_path_batch = [self.path_fc(x) for x in x_path_batch]
-            batch_A, batch_h, h_path_attention = self.batched_attention_net(processed_path_batch)
+            self._temp_path_features = [feat.detach() for feat in processed_path_batch]
+            batch_A, batch_A_raw, batch_h, h_path_attention = self.batched_attention_net(processed_path_batch)  # 🔥 改为接收 4 个值
             h_path_enc = self.rho(h_path_attention)
 
             # 🔥🔥🔥 在这之后添加：
             # 保存attention权重供可解释性使用
-            self._last_batch_attention = batch_A  # 列表，每个元素是一个样本的attention [n_patches]
+            self._last_batch_attention = batch_A_raw   # 🔥 将 post-softmax 替换为 pre-softmax
+            self._temp_path_features = [feat.detach() for feat in processed_path_batch]  # 🔥 新增
             # print(f"  💾 Saved attention weights: {len(batch_A)} samples, first sample has {len(batch_A[0]) if batch_A else 0} patches")
         
         # 🔥 Omic 模态（只在编码器存在且输入存在时处理）
