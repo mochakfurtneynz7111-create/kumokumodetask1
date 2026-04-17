@@ -93,6 +93,8 @@ def main(args):
             print(f"  MUT features: {len(feature_info['mut_cols'])}")
             print(f"  RNA features: {len(feature_info['rna_cols'])}")
             print(f"  Embedding features: {len(feature_info['embedding_cols'])}")
+            # 🔥 加这一行：打印具体的mut列名，看清楚到底有哪些
+            print(f"  MUT col names: {feature_info['mut_cols']}")
         
         ### Specify the input dimension size if using genomic features.
         if 'omic' in args.mode or args.mode == 'cluster' or args.mode == 'graph' or args.mode == 'pyramid':
@@ -359,6 +361,10 @@ parser.add_argument('--lambda_contra', type=float, default=1e-5, help='Weight fo
 parser.add_argument('--bag_weight',      type=float, default=0.7, help='clam: weight coefficient for bag-level loss (default: 0.7)')
 parser.add_argument('--testing', 	 	 action='store_true', default=False, help='debugging tool')
 
+parser.add_argument('--text_npy', type=str, default=None,
+                   help='文本嵌入 .npy 文件路径，shape=[N, 6, 768]，'
+                        '如 data_text_features/LUSC_text_embeddings_qa_level.npy')
+
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -481,6 +487,7 @@ if args.task_type == 'survival':
                                            mode = args.mode,
 										   apply_sig = args.apply_sig,
 										   data_dir= os.path.join(args.data_root_dir, feature_dir),
+                                           text_npy_path = args.text_npy,
 										   shuffle = False, 
 										   seed = args.seed, 
 										   print_info = True,
