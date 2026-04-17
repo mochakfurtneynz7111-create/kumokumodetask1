@@ -485,7 +485,8 @@ class SurvivalVolumeGuidedFusion(nn.Module):
         time_emb = torch.clamp(time_emb, -10, 10)
         volume = torch.clamp(volume, -10, 10)
         risk_score = torch.clamp(risk_score, -10, 10)
-        
+
+        """
         # 构建输入特征
         combined = torch.cat([
             feat1, feat2, feat3, 
@@ -498,6 +499,18 @@ class SurvivalVolumeGuidedFusion(nn.Module):
         if torch.isnan(combined).any():
             print("⚠️ Warning: NaN in combined features")
             combined = torch.nan_to_num(combined, nan=0.0)
+        """
+        #🔥 加这几行：进入 weight_generator 前先归一化
+        feat1_n = F.normalize(feat1, p=2, dim=-1)
+        feat2_n = F.normalize(feat2, p=2, dim=-1)
+        feat3_n = F.normalize(feat3, p=2, dim=-1)
+        
+        combined = torch.cat([
+            feat1_n, feat2_n, feat3_n,
+            time_emb,
+            volume.unsqueeze(1),
+            risk_score.unsqueeze(1) if risk_score.dim() == 1 else risk_score
+        ], dim=1)
         
         # 生成权重
         weights = self.weight_generator(combined)
@@ -1891,7 +1904,7 @@ class GRAMPorpoiseMMF(nn.Module):
                         value=x_text
                     )
                     x_text_2d = aggregated.squeeze(1)  # [batch, 768]
-                    print(f"     Aggregated via attention: {x_text_2d.shape}")
+                    # print(f"     Aggregated via attention: {x_text_2d.shape}")
                 else:
                     # 方案B: 直接平均
                     x_text_2d = x_text.mean(dim=1)  # [batch, 768]
@@ -2468,7 +2481,7 @@ if __name__ == "__main__":
         'task_type': 'multi_label',
         'use_gram_fusion': True
     }
-    
+      
     model_ml = GRAMPorpoiseMMF(**config_ml)
     labels_ml = torch.randint(0, 2, (batch_size, 5)).float()
     
