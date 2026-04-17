@@ -1423,12 +1423,12 @@ def validate_survival_gram(cur, epoch, model, loader, n_classes,
                                 qa_texts = [line.strip() for line in f.readlines()][:getattr(args, 'n_qa_pairs', 6)]
                         else:
                             qa_texts = [
-                                "What is the tumor grade and differentiation?",
-                                "Is there immune cell infiltration?",
-                                "What is the tumor proliferation status?",
-                                "Is there necrosis or hemorrhage?",
-                                "What is the stromal composition?",
-                                "Are there specific morphological features?"
+                                "What is the histological grade or differentiation of the tumor? ",
+                                "What is the extent of tumor-infiltrating lymphocytes (TILs) within or around the tumor? ",
+                                "What is the local tumor invasion pattern and which adjacent structures are involved? ",
+                                "Is there tumor necrosis present, and if so, what is its estimated extent and pattern? ",
+                                "Is there evidence of lymphovascular invasion (LVI) by the tumor? ",
+                                "What is the surgical resection margin status? "
                             ]
                         
                         if hasattr(args, 'pathway_names_file') and args.pathway_names_file and os.path.exists(args.pathway_names_file):
@@ -1875,7 +1875,7 @@ def summary_multilabel_gram(model, loader, n_labels):
     return patient_results, mean_auc, mean_ap, aucs, aps
 
 
-def summary_survival_gram(model, loader, n_classes):
+def summary_survival_gram(model, loader, n_classes, args=None, cur=0):
     """生存分析任务总结 - 支持PT和H5模式"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
@@ -2006,6 +2006,20 @@ def summary_survival_gram(model, loader, n_classes):
     )[0]
     
     print(f"📊 Summary: {len(all_risk_scores)} samples processed")
+    # 新增：保存 KM 所需数据
+    import pandas as pd
+    
+    df_km = pd.DataFrame({
+        'risk_score':  all_risk_scores,
+        'event_time':  all_event_times,
+        'censorship':  all_censorships,  # 你的代码里 1=删失, 0=事件发生
+    })
+    
+    median_risk = df_km['risk_score'].median()
+    df_km['risk_group'] = (df_km['risk_score'] >= median_risk).map({True: 'High', False: 'Low'})
+    
+    save_dir = args.results_dir if args is not None else '.'
+    df_km.to_csv(os.path.join(save_dir, f'km_data_fold{cur}.csv'), index=False)
     
     return patient_results, c_index
 
@@ -2299,7 +2313,7 @@ def train(datasets: tuple, cur: int, args: Namespace):
         return results_dict, mean_auc, mean_ap, aucs, aps
         
     elif args.task_type == 'survival':
-        results_dict, c_index = summary_survival_gram(model, val_loader, args.n_classes)
+        results_dict, c_index = summary_survival_gram(model, val_loader, args.n_classes, args=args, cur=cur)
         print(f'Val C-Index: {c_index:.4f}')
         if writer:
             writer.close()
