@@ -291,7 +291,7 @@ parser.add_argument('--model_type', type=str,
                    default='mcat', 
                    help='Type of model (Default: mcat). Use gram_porpoise_mmf for GRAM-enhanced multimodal model')
 
-parser.add_argument('--mode',            type=str, choices=['text','omic', 'path', 'pathomic', 'pathomic_fast', 'cluster', 'coattn', 'pathomictext'], default='coattn', help='Specifies which modalities to use / collate function in dataloader.')
+parser.add_argument('--mode',            type=str, choices=['text','omic', 'path', 'pathomic', 'pathomic_fast', 'cluster', 'coattn', 'pathomictext','pathotext'], default='coattn', help='Specifies which modalities to use / collate function in dataloader.')
 parser.add_argument('--fusion',          type=str, choices=['None', 'concat', 'bilinear','gram','transformer','concatonly','transformer_medium', 'cross_attention', 'cpathomni_sequential','highdim_fusion'], default='bilinear', help='Type of fusion. (Default: concat).')
 parser.add_argument('--apply_sig',		 action='store_true', default=False, help='Use genomic features as signature embeddings.')
 parser.add_argument('--apply_sigfeats',  action='store_true', default=False, help='Use genomic features as tabular features.')
@@ -349,6 +349,11 @@ parser.add_argument('--weighted_sample', action='store_true', default=True, help
 parser.add_argument('--early_stopping',  action='store_true', default=False, help='Enable early stopping')
 parser.add_argument('--metric_early_stopping', action='store_true', default=False, 
                    help='Enable metric-based early stopping (accuracy for classification, C-index for survival)')
+parser.add_argument('--classification_metric', type=str, choices=['acc', 'auc'], default='acc',
+                   help='Metric for classification early stopping and model selection: acc (default) or auc. '
+                        'Use acc for subtype classification, auc for mutation prediction.')
+
+parser.add_argument('--encoder_hidden_dim', type=int, default=768, help='Hidden dimension for encoders (default: 768)')
 
 ### Multi-Label specific parameters
 parser.add_argument('--multilabel_threshold', type=float, default=0.5, help='Threshold for multi-label predictions (default: 0.5)')
@@ -364,6 +369,11 @@ parser.add_argument('--testing', 	 	 action='store_true', default=False, help='d
 parser.add_argument('--text_npy', type=str, default=None,
                    help='文本嵌入 .npy 文件路径，shape=[N, 6, 768]，'
                         '如 data_text_features/LUSC_text_embeddings_qa_level.npy')
+
+parser.add_argument('--csv_path_template', type=str, default=None,
+                    help='CSV路径模板，用{study}占位符表示study名称。'
+                         '例如分类任务: "{study}_all_clean.csv.zip"，'
+                         '突变预测: "TP53/TP53_{study}_all_clean.csv.zip"')
 
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -496,39 +506,29 @@ if args.task_type == 'survival':
 										   label_col = 'survival_months',
 										   ignore=[])
 
+
 elif args.task_type == 'classification':
-	study = '_'.join(args.task.split('_')[:2])	
-	study_dir = '%s_20x_features' % study
+    study = '_'.join(args.task.split('_')[:2])
+    study_dir = '%s_20x_features' % study
 
-	dataset = Generic_MIL_Classification_Dataset(csv_path = './%s/tp53_%s_all_clean.csv.zip' % (args.dataset_path, study),
-												 mode = args.mode,
-												 apply_sig = args.apply_sig,
-												 data_dir= os.path.join(args.data_root_dir, feature_dir),
-												 shuffle = False, 
-												 seed = args.seed, 
-												 print_info = True,
-												 patient_strat= False,
-												 n_classes=args.n_classes,
-												 label_col = 'label',
-												 ignore=[])
+    # 构建 csv 路径
+    if args.csv_path_template is not None:
+        csv_file = args.csv_path_template.format(study=study)
+    else:
+        csv_file = '%s_all_clean.csv.zip' % study  # 默认行为保持不变
 
-elif args.task_type == 'multi_label':
-	study = '_'.join(args.task.split('_')[:2])	
-	study_dir = '%s_20x_features' % study
-
-	dataset = Generic_MIL_MultiLabel_Dataset(
-		csv_path = './%s/multilabel_%s_all_clean.csv.zip' % (args.dataset_path, feature_dir),
-		mode = args.mode,
-		apply_sig = args.apply_sig,
-		data_dir= os.path.join(args.data_root_dir, study_dir),
-		shuffle = False, 
-		seed = args.seed, 
-		print_info = True,
-		patient_strat= False,
-		n_labels=args.n_labels,
-		label_cols = args.gene_names,
-		ignore=[]
-	)
+    dataset = Generic_MIL_Classification_Dataset(
+        csv_path = './%s/%s' % (args.dataset_path, csv_file),
+        mode = args.mode,
+        apply_sig = args.apply_sig,
+        data_dir = os.path.join(args.data_root_dir, feature_dir),
+        shuffle = False,
+        seed = args.seed,
+        print_info = True,
+        patient_strat = False,
+        n_classes = args.n_classes,
+        label_col = 'label',
+        ignore = [])
 
 else:
 	raise NotImplementedError
