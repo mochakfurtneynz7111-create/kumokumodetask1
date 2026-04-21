@@ -936,6 +936,7 @@ def validate_classification_gram(cur, epoch, model, loader, n_classes,
     
     all_preds = []
     all_labels = []
+    all_probs = []
     valid_batch_count = 0
     
     for batch_idx, batch_data in enumerate(loader):
@@ -1021,10 +1022,17 @@ def validate_classification_gram(cur, epoch, model, loader, n_classes,
             loss = loss_fn(logits, label)
             val_loss += loss.item()
             valid_batch_count += 1
-            
+
+            probs = F.softmax(logits, dim=1)
             _, preds = torch.max(logits, 1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(label.cpu().numpy())
+            # 逐样本append，每个元素shape=[n_classes]，最终np.array得到[N, n_classes]
+            probs_np = probs.detach().cpu().numpy()
+            if probs_np.ndim == 1:
+                probs_np = probs_np[np.newaxis, :]  # [n_classes] -> [1, n_classes]
+            for i in range(probs_np.shape[0]):
+                all_probs.append(probs_np[i])
             
             # 🔥 可解释性分析（只在H5模式且slide_ids不为None时）
             if (interpretability_analyzer is not None and 
@@ -1074,28 +1082,58 @@ def validate_classification_gram(cur, epoch, model, loader, n_classes,
         return True
     
     val_acc = accuracy_score(all_labels, all_preds)
-    
-    print(f'Epoch: {epoch}, val_loss: {val_loss:.4f}, val_acc: {val_acc:.4f}')
-    
+
+    # 计算 AUROC 和 AUPRC
+    try:
+        all_probs_np = np.array(all_probs)   # shape应为[N, n_classes]
+        all_labels_np = np.array(all_labels)
+        # 诊断：打印shape帮助排查
+        # print(f'  DEBUG: all_probs_np.shape={all_probs_np.shape}, unique_labels={np.unique(all_labels_np)}')
+        if n_classes == 2:
+            pos_probs = all_probs_np[:, 1]   # 取正类概率列，shape=[N]
+            val_auc = roc_auc_score(all_labels_np, pos_probs)
+            val_auprc = average_precision_score(all_labels_np, pos_probs)
+        else:
+            val_auc = roc_auc_score(all_labels_np, all_probs_np, multi_class='ovr')
+            from sklearn.preprocessing import label_binarize
+            labels_bin = label_binarize(all_labels_np, classes=list(range(n_classes)))
+            val_auprc = average_precision_score(labels_bin, all_probs_np, average='macro')
+    except Exception as e:
+        print(f'  Warning: AUROC/AUPRC计算失败 ({e}), 使用0.5')
+        # 开启下面这行帮助诊断
+        print(f'  DEBUG shape: all_probs_np.shape={np.array(all_probs).shape}, n_classes={n_classes}, unique_labels={np.unique(all_labels)}')
+        val_auc = 0.5
+        val_auprc = 0.0
+
+    print(f'Epoch: {epoch}, val_loss: {val_loss:.4f}, val_acc: {val_acc:.4f}, val_auc: {val_auc:.4f}, val_auprc: {val_auprc:.4f}')
+
     if writer:
         writer.add_scalar('val/loss', val_loss, epoch)
         writer.add_scalar('val/acc', val_acc, epoch)
-    
+        writer.add_scalar('val/auc', val_auc, epoch)
+        writer.add_scalar('val/auprc', val_auprc, epoch)
+
+    # 根据 args.classification_metric 决定用哪个指标驱动 monitor 和 metric_stopping
+    cls_metric = getattr(args, 'classification_metric', 'acc') if args is not None else 'acc'
+    monitor_value = val_auc if cls_metric == 'auc' else val_acc
+    ckpt_suffix = 'maxauc' if cls_metric == 'auc' else 'maxacc'
+
     if monitor_acc:
-        monitor_acc(val_acc, model, ckpt_name=os.path.join(results_dir, f"s_{cur}_checkpoint.pt"))
-    
+        monitor_acc(monitor_value, model,
+                   ckpt_name=os.path.join(results_dir, f"s_{cur}_checkpoint.pt"))
+
     if metric_stopping:
-        metric_stopping(epoch, val_acc, model, 
-                       ckpt_name=os.path.join(results_dir, f"s_{cur}_maxacc_checkpoint.pt"))
+        metric_stopping(epoch, monitor_value, model,
+                       ckpt_name=os.path.join(results_dir, f"s_{cur}_{ckpt_suffix}_checkpoint.pt"))
         if metric_stopping.early_stop:
             return True
-    
+
     if early_stopping:
-        early_stopping(epoch, val_loss, model, 
+        early_stopping(epoch, val_loss, model,
                       ckpt_name=os.path.join(results_dir, f"s_{cur}_minloss_checkpoint.pt"))
         if early_stopping.early_stop:
             return True
-    
+
     return False
 
 
@@ -2221,12 +2259,22 @@ def train(datasets: tuple, cur: int, args: Namespace):
             metric_stopping = AUCEarlyStopping(warmup=5, patience=20, stop_epoch=30, verbose=True)
         else:
             metric_stopping = None
-    else:
-        monitor = Monitor_Acc()
-        if args.metric_early_stopping:
-            metric_stopping = AccuracyEarlyStopping(warmup=5, patience=20, stop_epoch=30, verbose=True)
+    else:  # classification
+        cls_metric = getattr(args, 'classification_metric', 'acc')  # 默认acc，向后兼容
+        if cls_metric == 'auc':
+            print(f'\nClassification early stopping metric: AUROC')
+            monitor = Monitor_Acc()  # Monitor_Acc逻辑是"越大越好保存"，传AUC同样适用
+            if args.metric_early_stopping:
+                metric_stopping = AUCEarlyStopping(warmup=5, patience=20, stop_epoch=30, verbose=True)
+            else:
+                metric_stopping = None
         else:
-            metric_stopping = None
+            print(f'\nClassification early stopping metric: Accuracy')
+            monitor = Monitor_Acc()
+            if args.metric_early_stopping:
+                metric_stopping = AccuracyEarlyStopping(warmup=5, patience=20, stop_epoch=30, verbose=True)
+            else:
+                metric_stopping = None
     
     print('Done!')
 
@@ -2275,7 +2323,9 @@ def train(datasets: tuple, cur: int, args: Namespace):
             checkpoint_path = os.path.join(args.results_dir, f"s_{cur}_checkpoint.pt")
     elif args.task_type == 'classification':
         if args.metric_early_stopping:
-            checkpoint_path = os.path.join(args.results_dir, f"s_{cur}_maxacc_checkpoint.pt")
+            cls_metric = getattr(args, 'classification_metric', 'acc')
+            ckpt_suffix = 'maxauc' if cls_metric == 'auc' else 'maxacc'
+            checkpoint_path = os.path.join(args.results_dir, f"s_{cur}_{ckpt_suffix}_checkpoint.pt")
         else:
             checkpoint_path = os.path.join(args.results_dir, f"s_{cur}_checkpoint.pt")
     else:
