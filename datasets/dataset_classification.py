@@ -297,6 +297,18 @@ class Generic_MIL_Classification_Dataset(Generic_WSI_Classification_Dataset):
                     genomic_features = torch.tensor(self.genomic_features.iloc[idx])
                     text_features = torch.tensor(self.text_features.iloc[idx])
                     return (path_features, genomic_features.unsqueeze(dim=0), text_features.unsqueeze(dim=0), label)
+                elif self.mode == 'pathotext':
+                    path_features = []
+                    for slide_id in slide_ids:
+                        wsi_path = os.path.join(data_dir, 'pt_files', '{}.pt'.format(slide_id.rstrip('.svs')))
+                        wsi_bag = torch.load(wsi_path)
+                        path_features.append(wsi_bag)
+                    path_features = torch.cat(path_features, dim=0)
+                    # omic位置用零向量占位，保持和pathomictext相同的4元素格式
+                    omic_dim = self.genomic_features.shape[1] if not self.genomic_features.empty else 1
+                    dummy_omic = torch.zeros(omic_dim)
+                    text_features = torch.tensor(self.text_features.iloc[idx].values, dtype=torch.float32)
+                    return (path_features, dummy_omic.unsqueeze(dim=0), text_features.unsqueeze(dim=0), label)
     
                 else:
                     raise NotImplementedError('Mode [%s] not implemented.' % self.mode)
