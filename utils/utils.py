@@ -1124,10 +1124,10 @@ def l1_reg_all(model, reg_type=None):
 
 def l1_reg_modules(model, reg_type=None):
     l1_reg = 0
-
-    l1_reg += l1_reg_all(model.fc_omic)
-    l1_reg += l1_reg_all(model.mm)
-
+    if model.fc_omic is not None:
+        l1_reg += l1_reg_all(model.fc_omic)
+    if model.mm is not None:
+        l1_reg += l1_reg_all(model.mm)
     return l1_reg
 
 def l1_reg_omic(model, reg_type=None):
