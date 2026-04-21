@@ -1012,18 +1012,37 @@ class TaskAdaptiveFusion(nn.Module):
             self.volume_reg_weight = 0.0
     
     def compute_volume_regularization(self, volume_info, labels=None):
-        """计算Volume正则化损失"""
+        """计算Volume正则化损失 - 同类小、跨类大"""
         volume = volume_info['volume']
         
         if self.task_type == 'classification' and labels is not None:
-            reg_loss = 0.0
+            reg_loss = torch.tensor(0.0, device=volume.device)
             unique_labels = torch.unique(labels)
             
-            for label in unique_labels:
-                mask = (labels == label)
+            # 1. 同类别内：volume 应该小（鼓励同类模态对齐）
+            intra_vols = []
+            for lbl in unique_labels:
+                mask = (labels == lbl)
                 if mask.sum() > 1:
-                    class_volume = volume[mask].mean()
-                    reg_loss += class_volume
+                    intra_vols.append(volume[mask].mean())
+            
+            if len(intra_vols) > 0:
+                intra_loss = torch.stack(intra_vols).mean()
+                reg_loss = reg_loss + intra_loss
+            
+            # 2. 跨类别间：鼓励不同类别的 volume 有差异（增加判别性）
+            if len(unique_labels) > 1:
+                class_vol_means = []
+                for lbl in unique_labels:
+                    mask = (labels == lbl)
+                    if mask.sum() > 0:
+                        class_vol_means.append(volume[mask].mean())
+                
+                if len(class_vol_means) > 1:
+                    stacked = torch.stack(class_vol_means)
+                    # 跨类别 volume 方差大 → 不同类的模态关系不同 → 有判别性
+                    inter_variance = stacked.var()
+                    reg_loss = reg_loss - 0.3 * inter_variance  # 最大化跨类方差
             
             return reg_loss * self.volume_reg_weight
         
@@ -1033,7 +1052,7 @@ class TaskAdaptiveFusion(nn.Module):
         
         else:
             return torch.tensor(0.0, device=volume.device)
-    
+        
     def forward(self, feat_path, feat_omic, feat_text, labels=None):
         """任务自适应融合"""
         fused, volume_info = self.volume_fusion(feat_path, feat_omic, feat_text)
@@ -1764,7 +1783,11 @@ class GRAMPorpoiseMMF(nn.Module):
                 nn.Linear(128, self.n_classes)
             )
         elif self.task_type == 'classification':
-            self.classifier = nn.Linear(classifier_input_dim, self.n_classes)
+            if self.use_gram_fusion:
+                # volume 标量直接参与分类，+1 是 volume 维度
+                self.classifier = nn.Linear(classifier_input_dim + 1, self.n_classes)
+            else:
+                self.classifier = nn.Linear(classifier_input_dim, self.n_classes)
         elif self.task_type == 'multi_label':
             # 多标签使用更深的分类器
             self.classifier = nn.Sequential(
@@ -2102,7 +2125,18 @@ class GRAMPorpoiseMMF(nn.Module):
             h_mm = self.time_fusion(h_mm_with_time)
         
         # 分类
-        logits = self.classifier(h_mm)
+        # logits = self.classifier(h_mm)
+        # 分类
+        if self.task_type == 'classification' and self.use_gram_fusion:
+            # 始终拼 volume，没有就用零向量，保证 classifier 输入维度稳定
+            if 'volume' in fusion_info:
+                volume = fusion_info['volume'].unsqueeze(1)  # [B, 1]
+            else:
+                volume = torch.zeros(h_mm.size(0), 1, device=h_mm.device)
+            h_mm_with_vol = torch.cat([h_mm, volume], dim=1)  # [B, 769]
+            logits = self.classifier(h_mm_with_vol)
+        else:
+            logits = self.classifier(h_mm)
         
         # 返回结果
         result = {'logits': logits}
